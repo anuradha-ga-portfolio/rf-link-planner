@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>RF Link Planner — Simplified</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    :root{
+      --bg:#0f1724;
+      --panel:#0b1220;
+      --accent:#06b6d4;
+      --muted:#94a3b8;
+      --card:#071029;
+    }
+    html,body,#app{height:100%;margin:0;font-family:Inter, Roboto, system-ui, sans-serif;background:linear-gradient(180deg,#071428 0%, #02111a 100%);}
+    .app-wrap{display:flex;height:100%;}
+    #map{flex:1;min-width:0;}
+    .sidebar{
+      width:360px;
+      max-width:40%;
+      background:linear-gradient(180deg, rgba(2,6,23,0.9), rgba(3,8,18,0.95));
+      color:#e6eef6;
+      padding:14px;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.6);
+      display:flex;
+      flex-direction:column;
+    }
+    .header{display:flex;align-items:center;gap:12px;margin-bottom:10px}
+    .logo{width:44px;height:44px;border-radius:8px;background:linear-gradient(135deg,var(--accent),#10b981);display:flex;align-items:center;justify-content:center;font-weight:700;color:#02111a}
+    h1{font-size:1.05rem;margin:0}
+    p.lead{color:var(--muted);margin:6px 0 12px;font-size:0.9rem}
+    .controls{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+    .btn{background:transparent;border:1px solid rgba(255,255,255,0.06);padding:8px 10px;border-radius:8px;color:var(--muted);cursor:pointer}
+    .btn.primary{background:linear-gradient(90deg,var(--accent),#10b981);color:#02111a;border:none}
+    label{font-size:0.8rem;color:var(--muted);display:block;margin-top:8px}
+    .tower-list{margin-top:12px;overflow:auto;flex:1;padding-right:6px}
+    .tower-item{display:flex;align-items:center;justify-content:space-between;padding:8px;border-radius:8px;margin-bottom:8px;background:rgba(255,255,255,0.02)}
+    .tower-meta{display:flex;gap:8px;align-items:center}
+    .freq{font-weight:600;color:#bfeffd}
+    .small{font-size:0.85rem;color:var(--muted)}
+    .footer{font-size:0.8rem;color:var(--muted);margin-top:10px}
+    input[type="number"], select{background:transparent;border:1px solid rgba(255,255,255,0.06);padding:6px;border-radius:6px;color:#e6eef6}
+    .tiny{font-size:0.75rem;padding:4px 6px}
+    .hint{font-size:0.8rem;color:var(--muted);margin-top:6px}
+    .link-item{display:flex;gap:8px;align-items:center;justify-content:space-between;padding:6px;border-radius:8px;margin-bottom:6px;background:rgba(255,255,255,0.02)}
+    .controls .row{display:flex;gap:6px;align-items:center}
+    /* small screens */
+    @media (max-width:900px){
+      .sidebar{width:320px}
+    }
+    @media (max-width:700px){
+      .app-wrap{flex-direction:column}
+      .sidebar{width:100%;height:46vh;max-width:100%}
+      #map{height:54vh}
+    }
+    /* Tooltip-like hover label */
+    .leaflet-tooltip.custom { background: rgba(2,6,23,0.95); border-radius:6px; color:#dff7fb; padding:6px 8px; font-size:0.9rem; }
+  </style>
+</head>
+<body>
+  <div id="app" class="app-wrap">
+    <div class="sidebar">
+      <div class="header">
+        <div class="logo">RF</div>
+        <div>
+          <h1>RF Link Planner</h1>
+          <p class="lead">Click map to add towers. Select two towers (same frequency) to create a link. Click a link to show the 1st Fresnel zone.</p>
+        </div>
+      </div>
+
+      <div class="controls">
+        <div class="row">
+          <label style="display:block">Default freq</label>
+          <input id="defaultFreq" type="number" min="0.001" step="0.001" value="5" style="width:80px" />
+          <select id="defaultUnit"><option value="ghz">GHz</option><option value="mhz">MHz</option></select>
+        </div>
+
+        <div style="width:100%;display:flex;gap:6px; margin-top:6px">
+          <button id="placeMode" class="btn primary">Place towers (click map)</button>
+          <button id="linkMode" class="btn">Link towers</button>
+          <button id="clearAll" class="btn">Clear All</button>
+        </div>
+
+        <div class="hint">Modes: <b>Place towers</b> — click map to drop a tower. <b>Link towers</b> — click first tower, then second (must match frequency).</div>
+      </div>
+
+      <div style="margin-top:12px">
+        <strong>Towers</strong>
+        <div id="towerList" class="tower-list" role="list"></div>
+      </div>
+
+      <div style="margin-top:8px">
+        <strong>Links</strong>
+        <div id="linkList" style="max-height:140px;overflow:auto;margin-top:6px"></div>
+      </div>
+
+      <div class="footer">
+        <div>Elevation: attempted via <code>open-elevation</code> API (sampled along path). If blocked, the map will still draw a Fresnel ellipse using geometry only.</div>
+        <div style="margin-top:6px">Deliverable: front-end prototype. Export to GitHub & host at Vercel / GitHub Pages.</div>
+      </div>
+    </div>
+
+    <div id="map"></div>
+  </div>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    /******************************
+     * RF Link Planner - Vanilla JS
+     * Single-file demo
+     ******************************/
+    (function(){
+      // Map & state
+      const map = L.map('map', {preferCanvas:false}).setView([48.137, 11.575], 12); // Munich as default
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap contributors'
+      }).addTo(map);
+
+      const state = {
+        towers: {}, // id -> {id,latlng,freq_hz, marker}
+        links: {},  // id -> {id, aId, bId, polyline, meta}
+        nextTower: 1,
+        nextLink: 1,
+        mode: 'place', // 'place' or 'link'
+        linkFirstSelected: null,
+      };
+
+      // DOM refs
+      const defaultFreqInput = document.getElementById('defaultFreq');
+      const defaultUnit = document.getElementById('defaultUnit');
+      const placeBtn = document.getElementById('placeMode');
+      const linkBtn = document.getElementById('linkMode');
+      const clearBtn = document.getElementById('clearAll');
+      const towerListDiv = document.getElementById('towerList');
+      const linkListDiv = document.getElementById('linkList');
+
+      // SVG layer for Fresnel ellipse (we will draw raw SVG elements on top)
+      const svgLayer = L.svg().addTo(map);
+      const svgRoot = document.querySelector('#map svg');
+      let activeFresnel = null; // {ellipseEl, linkId}
+
+      // Utilities
+      const c = 3e8; // speed of light m/s
+      function freqToHz(val, unit){
+        if(unit === 'ghz') return val * 1e9;
+        if(unit === 'mhz') return val * 1e6;
+        return val;
+      }
+      function haversineDistanceMeters(lat1, lon1, lat2, lon2){
+        const R = 6371000;
+        const toRad = Math.PI/180;
+        const dLat = (lat2-lat1)*toRad;
+        const dLon = (lon2-lon1)*toRad;
+        const a = Math.sin(dLat/2)**2 + Math.cos(lat1*toRad)*Math.cos(lat2*toRad)*Math.sin(dLon/2)**2;
+        const d = 2*R*Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        return d;
+      }
+
+      function computeFresnelRadiusAtPoint(lambda, d1, d2){
+        // r = sqrt( (λ * d1 * d2) / (d1 + d2) )
+        if(d1 + d2 === 0) return 0;
+        return Math.sqrt( (lambda * d1 * d2) / (d1 + d2) );
+      }
+
+      // For a simplified 2D ellipse, we calculate maximum radius at midpoint:
+      // r_max = 0.5 * sqrt(λ * d)  (since d1=d2=d/2)
+      function fresnelMaxRadius(lambda, d){
+        return 0.5 * Math.sqrt(lambda * d);
+      }
+
+      // Convert meters to pixel distance at given latlng
+      function metersToPixelsAtLat(midLatLng, meters){
+        // convert small northward meters to delta lat
+        const R = 6378137; // approximate radius
+        const dLat = (meters / R) * (180/Math.PI);
+        const p1 = map.latLngToLayerPoint(L.latLng(midLatLng.lat, midLatLng.lng));
+        const p2 = map.latLngToLayerPoint(L.latLng(midLatLng.lat + dLat, midLatLng.lng));
+        const pixelsPerMeter = (p2.y - p1.y) / meters;
+        return Math.abs(pixelsPerMeter) * meters;
+      }
+
+      // DOM helpers for tower/link lists
+      function refreshTowerList(){
+        towerListDiv.innerHTML = '';
+        Object.values(state.towers).forEach(t=>{
+          const div = document.createElement('div');
+          div.className = 'tower-item';
+          const left = document.createElement('div'); left.className='tower-meta';
+          const dot = document.createElement('div'); dot.style.width='12px';dot.style.height='12px';dot.style.borderRadius='6px';dot.style.background='#06b6d4';
+          const info = document.createElement('div');
+          info.innerHTML = `<div style="font-weight:700">Tower #${t.id}</div><div class="small">${t.latlng.lat.toFixed(5)}, ${t.latlng.lng.toFixed(5)}</div>`;
+          left.appendChild(dot); left.appendChild(info);
+          const right = document.createElement('div');
+          right.style.textAlign='right';
+          const freqText = document.createElement('div'); freqText.className='freq';
+          // show in GHz if >=1 GHz
+          const freqGhz = t.freq_hz >= 1e9 ? (t.freq_hz / 1e9).toFixed(3) + ' GHz' : (t.freq_hz / 1e6).toFixed(1) + ' MHz';
+          freqText.textContent = freqGhz;
+          const btns = document.createElement('div'); btns.style.marginTop='6px';
+          const edit = document.createElement('button'); edit.className='btn tiny'; edit.textContent='Edit'; edit.onclick = ()=>editTower(t.id);
+          const del = document.createElement('button'); del.className='btn tiny'; del.textContent='Del'; del.onclick = ()=>deleteTower(t.id);
+          btns.appendChild(edit); btns.appendChild(del);
+          right.appendChild(freqText); right.appendChild(btns);
+          div.appendChild(left); div.appendChild(right);
+          towerListDiv.appendChild(div);
+        });
+      }
+
+      function refreshLinkList(){
+        linkListDiv.innerHTML = '';
+        Object.values(state.links).forEach(l=>{
+          const div = document.createElement('div');
+          div.className='link-item';
+          const left = document.createElement('div');
+          left.innerHTML = `<div style="font-weight:700">Link #${l.id}</div><div class="small">Towers ${l.aId} ↔ ${l.bId}</div>`;
+          const right = document.createElement('div');
+          const del = document.createElement('button'); del.className='btn tiny'; del.textContent='Del'; del.onclick = ()=>deleteLink(l.id);
+          right.appendChild(del);
+          div.appendChild(left); div.appendChild(right);
+          div.onclick = ()=>{ // simulate link click to show Fresnel
+            showFresnelForLink(l.id);
+          };
+          linkListDiv.appendChild(div);
+        });
+      }
+
+      // Marker creation
+      function addTower(latlng, freq_hz){
+        const id = state.nextTower++;
+        const marker = L.marker(latlng, {draggable:false, title:`Tower ${id}`}).addTo(map);
+        marker.on('click', ()=>onTowerClick(id));
+        marker.bindTooltip(()=>`Tower ${id}`, {permanent:false, className:'custom'});
+        state.towers[id] = {id, latlng, freq_hz, marker};
+        refreshTowerList();
+        return id;
+      }
+
+      function editTower(id){
+        const t = state.towers[id];
+        if(!t) return;
+        // prompt for new frequency (simple UI)
+        const currentGhz = (t.freq_hz / 1e9);
+        const newFreq = prompt('Enter frequency (numeric). Use GHz by default (e.g. 5 for 5 GHz).', currentGhz);
+        if(newFreq === null) return;
+        let v = parseFloat(newFreq);
+        if(isNaN(v) || v <= 0){ alert('Invalid value'); return; }
+        // assume GHz
+        t.freq_hz = v * 1e9;
+        refreshTowerList();
+      }
+
+      function deleteTower(id){
+        // remove related links
+        const linksToRemove = Object.values(state.links).filter(l => l.aId===id || l.bId===id).map(l=>l.id);
+        linksToRemove.forEach(deleteLink);
+        const t = state.towers[id];
+        if(t){
+          map.removeLayer(t.marker);
+          delete state.towers[id];
+        }
+        refreshTowerList();
+        refreshLinkList();
+      }
+
+      // Tower click in linking mode
+      function onTowerClick(id){
+        if(state.mode === 'place') {
+          // open quick edit popup
+          const t = state.towers[id];
+          const currentGhz = (t.freq_hz / 1e9);
+          const html = document.createElement('div');
+          html.innerHTML = `
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <label>Frequency</label>
+              <div style="display:flex;gap:6px">
+                <input id="tmpFreq" type="number" step="0.001" value="${currentGhz}" style="width:120px"/>
+                <select id="tmpUnit"><option value="ghz">GHz</option><option value="mhz">MHz</option></select>
+              </div>
+              <div style="display:flex;gap:6px;margin-top:6px">
+                <button id="saveBtn" class="btn primary tiny">Save</button>
+                <button id="closeBtn" class="btn tiny">Close</button>
+              </div>
+            </div>
+          `;
+          const popup = L.popup({closeOnClick:true, autoClose:true})
+            .setLatLng(t.latlng)
+            .setContent(html)
+            .openOn(map);
+
+          popup.getElement().querySelector('#saveBtn').addEventListener('click', ()=>{
+            const val = parseFloat(popup.getElement().querySelector('#tmpFreq').value);
+            const unit = popup.getElement().querySelector('#tmpUnit').value;
+            if(isNaN(val) || val<=0){ alert('Bad value'); return; }
+            t.freq_hz = freqToHz(val, unit);
+            map.closePopup();
+            refreshTowerList();
+          });
+          popup.getElement().querySelector('#closeBtn').addEventListener('click', ()=> map.closePopup());
+          return;
+        }
+
+        if(state.mode === 'link'){
+          if(!state.linkFirstSelected){
+            state.linkFirstSelected = id;
+            const t = state.towers[id];
+            // highlight marker
+            t.marker.setOpacity(0.6);
+            return;
+          } else if(state.linkFirstSelected === id){
+            // clicked same again -> cancel
+            state.towers[id].marker.setOpacity(1);
+            state.linkFirstSelected = null;
+            return;
+          } else {
+            // try create link
+            const a = state.towers[state.linkFirstSelected], b = state.towers[id];
+            // freq must match (within small tolerance)
+            const equalFreq = Math.abs(a.freq_hz - b.freq_hz) < 1e-9;
+            if(!equalFreq){
+              alert('Cannot link: towers frequencies do not match.');
+              // reset highlight
+              state.towers[state.linkFirstSelected].marker.setOpacity(1);
+              state.linkFirstSelected = null;
+              return;
+            }
+            // create link
+            createLink(a.id, b.id);
+            // reset highlight
+            a.marker.setOpacity(1);
+            state.linkFirstSelected = null;
+          }
+        }
+      }
+
+      function createLink(aId, bId){
+        const a = state.towers[aId], b = state.towers[bId];
+        if(!a || !b) return;
+        const id = state.nextLink++;
+        const poly = L.polyline([a.latlng, b.latlng], {color:'#10b981'}).addTo(map);
+        poly.on('click', ()=> showFresnelForLink(id));
+        poly.on('mouseover', ()=> {
+          poly.bindTooltip(`${(haversineDistanceMeters(a.latlng.lat,a.latlng.lng,b.latlng.lat,b.latlng.lng)/1000).toFixed(3)} km • ${a.freq_hz>=1e9? (a.freq_hz/1e9).toFixed(3)+' GHz' : (a.freq_hz/1e6).toFixed(1)+' MHz'}`, {className:'custom'}).openTooltip();
+        });
+        poly.on('mouseout', ()=> poly.closeTooltip());
+
+        // add to state
+        state.links[id] = {id, aId, bId, poly};
+        refreshLinkList();
+
+        // optionally sample elevations (non-blocking)
+        sampleElevationsAlongLink(a.latlng, b.latlng, 10).then(elevations=>{
+          // store elevations in link meta
+          state.links[id].meta = {elevations};
+        }).catch(err=>{
+          // ignore; still works without elevation
+          console.warn('Elevation sampling failed:', err);
+        });
+        return id;
+      }
+
+      function deleteLink(id){
+        const l = state.links[id];
+        if(!l) return;
+        map.removeLayer(l.poly);
+        // remove any active fresnel overlay if this link was active
+        if(activeFresnel && activeFresnel.linkId === id){
+          removeFresnel();
+        }
+        delete state.links[id];
+        refreshLinkList();
+      }
+
+      // Mode toggles
+      placeBtn.addEventListener('click', ()=>{ state.mode='place'; placeBtn.classList.add('primary'); linkBtn.classList.remove('primary'); });
+      linkBtn.addEventListener('click', ()=>{ state.mode='link'; linkBtn.classList.add('primary'); placeBtn.classList.remove('primary'); });
+      clearBtn.addEventListener('click', ()=> {
+        if(!confirm('Remove all towers and links?')) return;
+        // remove layers
+        Object.values(state.towers).forEach(t=> map.removeLayer(t.marker));
+        Object.values(state.links).forEach(l=> map.removeLayer(l.poly));
+        state.towers = {}; state.links={}; state.nextTower=1; state.nextLink=1;
+        refreshTowerList(); refreshLinkList();
+        removeFresnel();
+      });
+
+      // Map click to place towers in place mode
+      map.on('click', (ev)=>{
+        if(state.mode !== 'place') return;
+        const freqVal = parseFloat(defaultFreqInput.value) || 5;
+        const unit = defaultUnit.value;
+        const freqHz = freqToHz(freqVal, unit);
+        const id = addTower(ev.latlng, freqHz);
+
+        // Small popup to edit immediately
+        const popupHtml = `<div style="display:flex;flex-direction:column;gap:8px">
+          <div><strong>Tower #${id}</strong></div>
+          <div style="display:flex;gap:6px">
+            <input id="pfreq" type="number" step="0.001" value="${freqVal}" style="width:120px"/>
+            <select id="punit"><option value="ghz" ${unit==='ghz'?'selected':''}>GHz</option><option value="mhz" ${unit==='mhz'?'selected':''}>MHz</option></select>
+          </div>
+          <div style="display:flex;gap:6px">
+            <button id="psave" class="btn primary tiny">Save</button>
+            <button id="pcancel" class="btn tiny">Close</button>
+          </div>
+        </div>`;
+        const popup = L.popup({autoClose:true, closeOnClick:false})
+          .setLatLng(state.towers[id].latlng)
+          .setContent(popupHtml)
+          .openOn(map);
+
+        // Handlers
+        setTimeout(()=>{ // wait for DOM to be within popup
+          try {
+            popup.getElement().querySelector('#psave').addEventListener('click', ()=>{
+              const v = parseFloat(popup.getElement().querySelector('#pfreq').value);
+              const u = popup.getElement().querySelector('#punit').value;
+              if(!isNaN(v) && v>0){
+                state.towers[id].freq_hz = freqToHz(v,u);
+                refreshTowerList();
+              }
+              map.closePopup();
+            });
+            popup.getElement().querySelector('#pcancel').addEventListener('click', ()=> map.closePopup());
+          } catch(e){}
+        }, 40);
+      });
+
+      // Elevation sampling via Open-Elevation: supply a list of lat,lng points as locations param
+      // returns Promise resolving to array of elevations (meters)
+      async function sampleElevationsAlongLink(aLatLng, bLatLng, samples=10){
+        // create sample points along the line
+        const pts = [];
+        for(let i=0;i<=samples;i++){
+          const t = i / samples;
+          const lat = aLatLng.lat*(1-t) + bLatLng.lat*t;
+          const lng = aLatLng.lng*(1-t) + bLatLng.lng*t;
+          pts.push({lat,lng});
+        }
+        // Build locations string accepted by open-elevation
+        // Open-elevation supports multiple locations query parameter like ?locations=lat,lng|lat,lng
+        const locs = pts.map(p=> `${p.lat},${p.lng}`).join('|');
+        // API endpoint
+        const url = `https://api.open-elevation.com/api/v1/lookup?locations=${encodeURIComponent(locs)}`;
+        const resp = await fetch(url);
+        if(!resp.ok) throw new Error('Elevation API failed: ' + resp.status);
+        const json = await resp.json();
+        if(!json.results) throw new Error('Bad elevation response');
+        return json.results.map(r=> r.elevation);
+      }
+
+      // Show Fresnel ellipse for a link id
+      async function showFresnelForLink(linkId){
+        const l = state.links[linkId];
+        if(!l) return;
+        const a = state.towers[l.aId], b = state.towers[l.bId];
+        if(!a || !b) return;
+
+        // compute path distance (meters)
+        const d = haversineDistanceMeters(a.latlng.lat,a.latlng.lng,b.latlng.lat,b.latlng.lng);
+
+        // get frequency (both equal) and wavelength
+        const f = a.freq_hz;
+        const lambda = c / f;
+
+        // approximate fresnel max radius (meters)
+        const rMax = fresnelMaxRadius(lambda, d);
+
+        // use elevation info (if available) to optionally show a note (not used in geometry here)
+        let elevations = (l.meta && l.meta.elevations) ? l.meta.elevations : null;
+        // We'll draw ellipse centered at midpoint, with major axis equal to line length (in pixels)
+        // and minor axis equal to 2*rMax (in pixels), rotated to line angle.
+
+        removeFresnel(); // remove any existing
+
+        // compute pixel coordinates
+        const pA = map.latLngToLayerPoint(a.latlng);
+        const pB = map.latLngToLayerPoint(b.latlng);
+        const midLat = (a.latlng.lat + b.latlng.lat)/2;
+        const midLng = (a.latlng.lng + b.latlng.lng)/2;
+        const mid = L.latLng(midLat, midLng);
+        const pMid = map.latLngToLayerPoint(mid);
+
+        const pixelLength = Math.hypot(pB.x - pA.x, pB.y - pA.y);
+        const pixelHalfLen = pixelLength / 2;
+
+        // convert rMax (meters) to pixels using local scale
+        const pixelR = metersToPixelsAtLat(mid, rMax);
+
+        // create SVG ellipse
+        const svg = svgRoot; // <svg> element overlayed by leaflet
+        const ns = "http://www.w3.org/2000/svg";
+        const ellipse = document.createElementNS(ns, 'ellipse');
+        ellipse.setAttribute('cx', pMid.x);
+        ellipse.setAttribute('cy', pMid.y);
+        ellipse.setAttribute('rx', pixelHalfLen); // along link
+        ellipse.setAttribute('ry', pixelR); // perpendicular
+        ellipse.setAttribute('fill', 'rgba(6,182,212,0.12)');
+        ellipse.setAttribute('stroke', 'rgba(6,182,212,0.9)');
+        ellipse.setAttribute('stroke-width', '2');
+        // compute angle of line in degrees for rotation transform around center
+        const angle = Math.atan2(pB.y - pA.y, pB.x - pA.x) * (180/Math.PI);
+        ellipse.setAttribute('transform', `rotate(${angle} ${pMid.x} ${pMid.y})`);
+        ellipse.style.pointerEvents = 'none'; // pass clicks through (we might not want to capture)
+
+        // label (text)
+        const text = document.createElementNS(ns, 'text');
+        text.setAttribute('x', pMid.x);
+        text.setAttribute('y', pMid.y - pixelR - 8);
+        text.setAttribute('text-anchor','middle');
+        text.setAttribute('fill','#e6f9fb');
+        text.setAttribute('font-size','12px');
+        text.textContent = `Fresnel (rₘₐₓ ≈ ${rMax.toFixed(2)} m, d=${(d/1000).toFixed(3)} km)`;
+
+        // append into svgRoot group so it moves with map panning/zooming
+        svg.appendChild(ellipse);
+        svg.appendChild(text);
+
+        activeFresnel = {ellipseEl:ellipse, textEl:text, linkId:linkId, aId:l.aId, bId:l.bId};
+
+        // keep ellipse repositioned on map zoom/drag
+        function onViewReset(){ // recalc positions
+          const pA2 = map.latLngToLayerPoint(a.latlng);
+          const pB2 = map.latLngToLayerPoint(b.latlng);
+          const pMid2 = map.latLngToLayerPoint(mid);
+          const pixelLen2 = Math.hypot(pB2.x - pA2.x, pB2.y - pA2.y);
+          const halfLen2 = pixelLen2/2;
+          const pixelR2 = metersToPixelsAtLat(mid, rMax);
+          ellipse.setAttribute('cx', pMid2.x);
+          ellipse.setAttribute('cy', pMid2.y);
+          ellipse.setAttribute('rx', halfLen2);
+          ellipse.setAttribute('ry', pixelR2);
+          const angle2 = Math.atan2(pB2.y - pA2.y, pB2.x - pA2.x) * (180/Math.PI);
+          ellipse.setAttribute('transform', `rotate(${angle2} ${pMid2.x} ${pMid2.y})`);
+          text.setAttribute('x', pMid2.x);
+          text.setAttribute('y', pMid2.y - pixelR2 - 8);
+          text.textContent = `Fresnel (rₘₐₓ ≈ ${rMax.toFixed(2)} m, d=${(d/1000).toFixed(3)} km)`;
+        }
+        map.on('zoom viewreset move', onViewReset);
+
+        // store listener so we can remove later
+        activeFresnel.mapListener = onViewReset;
+      }
+
+      function removeFresnel(){
+        if(!activeFresnel) return;
+        try {
+          activeFresnel.ellipseEl.remove();
+          activeFresnel.textEl.remove();
+        } catch(e){}
+        map.off('zoom viewreset move', activeFresnel.mapListener);
+        activeFresnel = null;
+      }
+
+      // Simple keyboard: ESC unselect
+      window.addEventListener('keydown', (e)=>{
+        if(e.key === 'Escape'){
+          state.linkFirstSelected = null;
+          Object.values(state.towers).forEach(t=> t.marker.setOpacity(1));
+          removeFresnel();
+        }
+      });
+
+      // A minimal sample initial dataset for quick demo
+      (function seedDemo(){
+        const t1 = addTower({lat:48.137, lng:11.575}, 5e9);
+        const t2 = addTower({lat:48.15, lng:11.62}, 5e9);
+        const t3 = addTower({lat:48.12, lng:11.58}, 3.5e9);
+        createLink(t1,t2);
+      })();
+
+      // Helpers: show fresnel when clicking link in list handled by linkList click
+      window.showFresnelForLink = showFresnelForLink;
+
+      // Expose minimal state for debugging
+      window.rfPlannerState = state;
+
+      // Inform the user (console)
+      console.info('RF Link Planner ready. Add towers by clicking the map (mode: place).');
+    })();
+  </script>
+</body>
+</html>
