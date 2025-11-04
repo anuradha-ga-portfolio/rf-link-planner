@@ -2,7 +2,7 @@ A web-based tool that allows users to plan simple point-to-point RF links betwee
 Built with Leaflet.js, HTML, CSS, and Vanilla JavaScript
 
 Live demo on
-👉 [https://rf-link-planner.vercel.app](https://rf-link-planner.vercel.app)  
+👉 [https://rf-link-planner-omega.vercel.app/](https://rf-link-planner-omega.vercel.app/)  
 
 Features:
 
